@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flight Delay Modeling + PSO + GA + NLP Query Interface (CLI Version)
+Flight Delay Modeling + PSO + NLP Query Interface (CLI Version)
 Reduced set of visualizations (important ones only).
 
 Run:
@@ -483,7 +483,7 @@ def prepare_ml_data(df: pd.DataFrame):
 
 
 # ------------------------------
-# Baseline ML models (not used for PSO/GA directly, but kept)
+# Baseline ML models
 # ------------------------------
 def train_baseline_models(df: pd.DataFrame, random_state: int = 42):
     X, y, feats = prepare_ml_data(df)
@@ -705,118 +705,6 @@ def pso_optimize_rf(
     best_params["max_features"] = float(best_params["max_features"])
 
     return best_params, float(global_best_score), convergence
-
-
-# ------------------------------
-# GA to tune RF hyperparameters (NEW)
-# ------------------------------
-def ga_optimize_rf(
-    df: pd.DataFrame,
-    pop_size: int = 12,
-    n_gens: int = 12,
-    crossover_rate: float = 0.9,
-    mutation_rate: float = 0.2,
-    random_state: int = 42,
-):
-    """
-    Real-coded Genetic Algorithm for RF hyperparameters:
-    - Chromosome: [n_estimators, max_depth, max_features]
-    """
-    rng = np.random.RandomState(random_state)
-    X, y, feats = prepare_ml_data(df)
-
-    # Subsample for speed
-    if len(X) > 20000:
-        idx = rng.choice(len(X), size=20000, replace=False)
-        X = X.iloc[idx]
-        y = y.iloc[idx]
-
-    X_train, X_val, y_train, y_val = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=random_state,
-        stratify=y if y.nunique() > 1 else None,
-    )
-
-    bounds = {
-        "n_estimators": (50, 200),
-        "max_depth": (5, 20),
-        "max_features": (0.3, 1.0),
-    }
-    keys = list(bounds.keys())
-    dim = len(bounds)
-
-    lb = np.array([bounds[k][0] for k in keys], dtype=float)
-    ub = np.array([bounds[k][1] for k in keys], dtype=float)
-    mut_sigma = 0.1 * (ub - lb)
-
-    def random_individual():
-        return lb + (ub - lb) * rng.rand(dim)
-
-    def evaluate(individual):
-        params = {k: individual[j] for j, k in enumerate(keys)}
-        return _rf_accuracy_for_params(X_train, X_val, y_train, y_val, params)
-
-    def tournament_select(pop, fitness, k=3):
-        idxs = rng.choice(len(pop), size=k, replace=False)
-        best_idx = idxs[np.argmax(fitness[idxs])]
-        return pop[best_idx].copy()
-
-    # Initialize population
-    population = np.array([random_individual() for _ in range(pop_size)])
-    fitness = np.array([evaluate(ind) for ind in population])
-
-    best_idx = int(np.argmax(fitness))
-    best_individual = population[best_idx].copy()
-    best_score = float(fitness[best_idx])
-    convergence = [best_score]
-
-    for _ in range(n_gens):
-        new_population = []
-
-        while len(new_population) < pop_size:
-            # Selection
-            parent1 = tournament_select(population, fitness)
-            parent2 = tournament_select(population, fitness)
-
-            # Crossover (uniform)
-            if rng.rand() < crossover_rate:
-                mask = rng.rand(dim) < 0.5
-                child1 = np.where(mask, parent1, parent2)
-                child2 = np.where(mask, parent2, parent1)
-            else:
-                child1, child2 = parent1.copy(), parent2.copy()
-
-            # Mutation (Gaussian)
-            for child in (child1, child2):
-                if rng.rand() < mutation_rate:
-                    mut_mask = rng.rand(dim) < 0.5
-                    child[mut_mask] += rng.normal(0, mut_sigma[mut_mask])
-                    child[:] = np.clip(child, lb, ub)
-                new_population.append(child)
-
-                if len(new_population) >= pop_size:
-                    break
-
-        population = np.array(new_population)
-        fitness = np.array([evaluate(ind) for ind in population])
-
-        gen_best_idx = int(np.argmax(fitness))
-        gen_best_score = float(fitness[gen_best_idx])
-
-        if gen_best_score > best_score:
-            best_score = gen_best_score
-            best_individual = population[gen_best_idx].copy()
-
-        convergence.append(best_score)
-
-    best_params = {k: best_individual[j] for j, k in enumerate(keys)}
-    best_params["n_estimators"] = int(round(best_params["n_estimators"]))
-    best_params["max_depth"] = int(round(best_params["max_depth"]))
-    best_params["max_features"] = float(best_params["max_features"])
-
-    return best_params, best_score, convergence
 
 
 def compute_rf_metrics(df: pd.DataFrame, params: Dict[str, float], random_state: int = 42):
@@ -1075,24 +963,6 @@ def plot_congestion_heatmap_png(optimizer, path="congestion_heatmap.png"):
         print(f"[WARN] Could not create congestion heatmap: {e}")
 
 
-def plot_optimizer_convergence(conv_pso, conv_ga, path="optimizer_convergence.png"):
-    try:
-        plt.figure(figsize=(6, 4))
-        plt.plot(range(len(conv_pso)), conv_pso, marker="o", label="PSO")
-        plt.plot(range(len(conv_ga)), conv_ga, marker="s", label="GA")
-        plt.xlabel("Iteration / Generation")
-        plt.ylabel("Best Validation Accuracy")
-        plt.title("Optimizer Convergence (PSO vs GA)")
-        plt.grid(True, linestyle="--", alpha=0.6)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(path)
-        plt.close()
-        print(f"[INFO] Saved {path}")
-    except Exception as e:
-        print(f"[WARN] Could not save optimizer convergence plot: {e}")
-
-
 # ------------------------------
 # CLI / REPL helpers
 # ------------------------------
@@ -1197,8 +1067,6 @@ def main():
     parser.add_argument("--data", default="data.csv", help="Path to CSV dataset")
     parser.add_argument("--particles", type=int, default=10, help="PSO particles")
     parser.add_argument("--iters", type=int, default=15, help="PSO iterations")
-    parser.add_argument("--ga_pop", type=int, default=12, help="GA population size")
-    parser.add_argument("--ga_gens", type=int, default=12, help="GA generations")
     args = parser.parse_args()
 
     if not os.path.exists(args.data):
@@ -1227,26 +1095,19 @@ def main():
 
     # Baseline RF trained on the shared split
     print("\n>>> Training baseline RandomForest on shared split ...")
-    rf_pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("rf", RandomForestClassifier(
-            n_estimators=100, max_depth=10,
-            max_features=1.0, random_state=42, n_jobs=-1))
-    ])
+    rf_pipe = Pipeline([("scaler", StandardScaler()),
+                        ("rf", RandomForestClassifier(n_estimators=100, max_depth=10,
+                                                     max_features=1.0, random_state=42, n_jobs=-1))])
     rf_pipe.fit(X_train, y_train)
     prob_rf = rf_pipe.predict_proba(X_test)[:, 1]
     pred_rf = rf_pipe.predict(X_test)
 
     # Second model (XGBoost or GradientBoosting) trained on same split
     if XGBOOST_AVAILABLE:
-        model_b = XGBClassifier(
-            use_label_encoder=False, eval_metric="logloss",
-            n_estimators=100, random_state=42, max_depth=5
-        )
+        model_b = XGBClassifier(use_label_encoder=False, eval_metric="logloss",
+                                n_estimators=100, random_state=42, max_depth=5)
     else:
-        model_b = GradientBoostingClassifier(
-            n_estimators=100, random_state=42, max_depth=5
-        )
+        model_b = GradientBoostingClassifier(n_estimators=100, random_state=42, max_depth=5)
     model_b.fit(X_train, y_train)
     prob_b = model_b.predict_proba(X_test)[:, 1]
     pred_b = model_b.predict(X_test)
@@ -1270,111 +1131,76 @@ def main():
     print_metrics_table("Baseline Ensemble (RF + Boosted)", baseline_metrics)
 
     # ------------------------------
-    # Run PSO for RF hyperparameters
+    # Run PSO to find best hyperparameters (keeps its own internal split for validation)
     # ------------------------------
     print(f"\n>>> Running PSO for RF hyperparameters (particles={args.particles}, iterations={args.iters}) ...")
-    best_params_pso, best_acc_pso, convergence_pso = pso_optimize_rf(
-        df, n_particles=args.particles, n_iters=args.iters
-    )
+    best_params, best_acc, convergence = pso_optimize_rf(df, n_particles=args.particles, n_iters=args.iters)
     print("\n[PSO] Best RF hyperparameters:")
-    for k, v in best_params_pso.items():
+    for k, v in best_params.items():
         print(f"  {k}: {v}")
-    print(f"[PSO] Best validation accuracy (during PSO): {best_acc_pso:.4f}")
+    print(f"[PSO] Best validation accuracy (during PSO): {best_acc:.4f}")
 
-    # Train optimized RF (PSO) on shared split
+    # Train an optimized RF on our shared split using best_params
     print("\n>>> Training optimized RF with PSO hyperparameters on shared split ...")
-    opt_rf_pso = Pipeline([
-        ("scaler", StandardScaler()),
-        ("rf", RandomForestClassifier(
-            n_estimators=best_params_pso.get("n_estimators", 100),
-            max_depth=best_params_pso.get("max_depth", 10),
-            max_features=best_params_pso.get("max_features", 1.0),
-            random_state=42, n_jobs=-1))
-    ])
-    opt_rf_pso.fit(X_train, y_train)
-    prob_opt_pso = opt_rf_pso.predict_proba(X_test)[:, 1]
-    pred_opt_pso = opt_rf_pso.predict(X_test)
+    opt_rf = Pipeline([("scaler", StandardScaler()),
+                       ("rf", RandomForestClassifier(
+                           n_estimators=best_params.get("n_estimators", 100),
+                           max_depth=best_params.get("max_depth", 10),
+                           max_features=best_params.get("max_features", 1.0),
+                           random_state=42, n_jobs=-1))])
+    opt_rf.fit(X_train, y_train)
+    prob_opt = opt_rf.predict_proba(X_test)[:, 1]
+    pred_opt = opt_rf.predict(X_test)
 
-    optimized_metrics_pso = {
-        "Accuracy": accuracy_score(y_test, pred_opt_pso),
-        "Precision": precision_score(y_test, pred_opt_pso, zero_division=0),
-        "Recall": recall_score(y_test, pred_opt_pso, zero_division=0),
-        "F1": f1_score(y_test, pred_opt_pso, zero_division=0),
+    optimized_metrics = {
+        "Accuracy": accuracy_score(y_test, pred_opt),
+        "Precision": precision_score(y_test, pred_opt, zero_division=0),
+        "Recall": recall_score(y_test, pred_opt, zero_division=0),
+        "F1": f1_score(y_test, pred_opt, zero_division=0),
     }
     try:
-        optimized_metrics_pso["AUC"] = roc_auc_score(y_test, prob_opt_pso)
+        optimized_metrics["AUC"] = roc_auc_score(y_test, prob_opt)
     except Exception:
-        optimized_metrics_pso["AUC"] = np.nan
+        optimized_metrics["AUC"] = np.nan
 
-    print_metrics_table("Optimized RF (PSO)", optimized_metrics_pso)
+    print_metrics_table("Optimized RF (PSO)", optimized_metrics)
 
-    # ------------------------------
-    # Run GA for RF hyperparameters (NEW)
-    # ------------------------------
-    print(f"\n>>> Running GA for RF hyperparameters (pop={args.ga_pop}, gens={args.ga_gens}) ...")
-    best_params_ga, best_acc_ga, convergence_ga = ga_optimize_rf(
-        df, pop_size=args.ga_pop, n_gens=args.ga_gens
-    )
-    print("\n[GA] Best RF hyperparameters:")
-    for k, v in best_params_ga.items():
-        print(f"  {k}: {v}")
-    print(f"[GA] Best validation accuracy (during GA): {best_acc_ga:.4f}")
-
-    print("\n>>> Training optimized RF with GA hyperparameters on shared split ...")
-    opt_rf_ga = Pipeline([
-        ("scaler", StandardScaler()),
-        ("rf", RandomForestClassifier(
-            n_estimators=best_params_ga.get("n_estimators", 100),
-            max_depth=best_params_ga.get("max_depth", 10),
-            max_features=best_params_ga.get("max_features", 1.0),
-            random_state=42, n_jobs=-1))
-    ])
-    opt_rf_ga.fit(X_train, y_train)
-    prob_opt_ga = opt_rf_ga.predict_proba(X_test)[:, 1]
-    pred_opt_ga = opt_rf_ga.predict(X_test)
-
-    optimized_metrics_ga = {
-        "Accuracy": accuracy_score(y_test, pred_opt_ga),
-        "Precision": precision_score(y_test, pred_opt_ga, zero_division=0),
-        "Recall": recall_score(y_test, pred_opt_ga, zero_division=0),
-        "F1": f1_score(y_test, pred_opt_ga, zero_division=0),
-    }
+    # Save PSO convergence plot
     try:
-        optimized_metrics_ga["AUC"] = roc_auc_score(y_test, prob_opt_ga)
-    except Exception:
-        optimized_metrics_ga["AUC"] = np.nan
-
-    print_metrics_table("Optimized RF (GA)", optimized_metrics_ga)
+        plt.figure(figsize=(6, 4))
+        plt.plot(convergence, marker="o")
+        plt.xlabel("Iteration")
+        plt.ylabel("Best Validation Accuracy")
+        plt.title("PSO Convergence (RF Hyperparameters)")
+        plt.grid(True, linestyle="--", alpha=0.6)
+        plt.tight_layout()
+        plt.savefig("pso_convergence.png")
+        plt.close()
+        print("[INFO] Saved pso_convergence.png")
+    except Exception as e:
+        print(f"[WARN] Could not save PSO convergence plot: {e}")
 
     # ------------------------------
     # Visualizations: ROC comparison, feature importances, congestion heatmap
     # ------------------------------
-    # Compare baseline ensemble vs best of the two (here PSO-optimized)
-    plot_roc_curves(y_test, ensemble_prob_baseline, prob_opt_pso, path_roc="roc_curve_comparison.png")
-    plot_feature_importances(opt_rf_pso, features, path="feature_importances_opt.png")
-
-    # Optimizer convergence (combined plot for PSO vs GA)
-    plot_optimizer_convergence(convergence_pso, convergence_ga, path="optimizer_convergence.png")
+    plot_roc_curves(y_test, ensemble_prob_baseline, prob_opt, path_roc="roc_curve_comparison.png")
+    plot_feature_importances(opt_rf, features, path="feature_importances_opt.png")
 
     # Schedule optimizer & congestion visual
     optimizer = ScheduleOptimizer(df)
     plot_congestion_heatmap_png(optimizer, path="congestion_heatmap.png")
 
     # ------------------------------
-    # Print Baseline vs PSO vs GA table
+    # Print Baseline vs Optimized table
     # ------------------------------
-    print("\n=== Baseline Ensemble vs PSO-Optimized RF vs GA-Optimized RF (Test metrics) ===")
-    header = f"{'Metric':10s} | {'Baseline':>10s} | {'PSO':>10s} | {'GA':>10s}"
+    print("\n=== Baseline RF vs Optimized RF (Test metrics) ===")
+    header = f"{'Metric':10s} | {'Baseline':>10s} | {'Optimized':>10s}"
     print(header)
     print("-" * len(header))
-    all_keys = list(baseline_metrics.keys())
-    if "AUC" not in all_keys:
-        all_keys.append("AUC")
-    for k in all_keys:
-        b = baseline_metrics.get(k, np.nan)
-        p = optimized_metrics_pso.get(k, np.nan)
-        g = optimized_metrics_ga.get(k, np.nan)
-        print(f"{k:10s} | {b:10.4f} | {p:10.4f} | {g:10.4f}")
+    for k in baseline_metrics.keys():
+        b = baseline_metrics[k]
+        o = optimized_metrics.get(k, np.nan)
+        print(f"{k:10s} | {b:10.4f} | {o:10.4f}")
 
     # ------------------------------
     # NLP model & embeddings (REPL)
